@@ -155,7 +155,7 @@ def get_embeddings(graphs, model, device='cpu'):
 
         # Copy graph and get ID
         G = copy.deepcopy(graph)
-        id = G.graph["ID"]
+        id = G.graph["name"]
 
         # Convert to PyG graph
         G = remove_attributes_from_graph(G, ["polygon"])
