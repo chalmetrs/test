@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import networkx as nx
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry.base import BaseGeometry
 
 import omegaconf
 
@@ -63,38 +64,63 @@ def load_pickle(filename):
     return object
 
 
-def draw_polygon(ax, poly, label=None, **kwargs):
-    """Plots a polygon by filling it up. Edges of shapes are avoided to show exactly the area that
-    the elements occupy."""
-    x, y = poly.exterior.xy
-    ax.fill(x, y, label=label, **kwargs)
-    return
+def draw_geometry(ax, geometry: BaseGeometry, facecolor='lightblue', edgecolor='black', linewidth=0):
+    """
+    Plots a shapely Polygon or MultiPolygon.
 
+    Parameters:
+        geometry (Polygon or MultiPolygon): The geometry to plot.
+        ax (matplotlib.axes.Axes, optional): The axes to plot on.
+        color (str): Fill color.
+        edgecolor (str): Edge color.
+    """
 
-def draw_rooms(ax, polygons, colors, lw=None):
+    def draw_polygon(ax, poly, label=None, **kwargs):
+        """Plots a polygon by filling it up. Edges of shapes are avoided to show exactly the area that
+        the elements occupy."""
+        x, y = poly.exterior.xy
+        ax.fill(x, y, label=label, **kwargs)
+        return
+
+    if isinstance(geometry, Polygon):
+        draw_polygon(ax, geometry, facecolor=facecolor, edgecolor=edgecolor, linewidth=linewidth)
+    elif isinstance(geometry, MultiPolygon):
+        for poly in geometry.geoms:
+            draw_polygon(ax, poly, facecolor=facecolor, edgecolor=edgecolor, linewidth=linewidth)
+    else:
+        raise TypeError("Geometry must be a shapely Polygon or MultiPolygon")
+
+def draw_rooms(ax, polygons, colors, lw=None, edgecolor="white"):
     """Draws the rooms of the floor plan layout."""
 
     # Simultaneously extract geometries and categories
     # And directly plot them int the correct color
     for poly, color in zip(polygons, colors):
-        draw_polygon(ax, poly, facecolor=color, edgecolor='white', linewidth=lw)
+        draw_geometry(ax, poly, facecolor=color, edgecolor=edgecolor, linewidth=lw)
+
+def polygonize(poly):
+
+    try:
+        return Polygon(poly)
+    except:
+        return MultiPolygon([Polygon(d_sub) for d_sub in poly])
 
 
-def draw_graph(ax, G, fs, lw=0, s=20, w=2, 
-               node_color='black', edge_colors=['black', 'white'], 
-               viz_rooms=True,
-               polygons = None,
-               pos = None):
+def draw_graph(ax, G, fs, polygons=None, pos=None, 
+               lw=0, s=20, w=2, node_color='black', edge_colors=['black', 'white'], 
+               viz_rooms=True, viz_doors=False, viz_adjacency=True):
 
     # Extract information
-    if polygons is None: 
-        polygons = [Polygon(d) for _, d in G.nodes('polygon')]
+    if polygons is None:
+        polygons = [polygonize(d) for _, d in G.nodes('polygon')]
+
     colors = [room_colors[d] for _, d in G.nodes('category')]
-    if pos is None: 
+
+    if pos is None:
         pos = {n: np.array(
-            [Polygon(d).representative_point().x,
-            Polygon(d).representative_point().y])
-            for n, d in G.nodes('polygon')}
+            [polygonize(d).representative_point().x,
+             polygonize(d).representative_point().y])
+               for n, d in G.nodes('polygon')}
 
     # Draw room shapes
     if viz_rooms:
@@ -104,17 +130,22 @@ def draw_graph(ax, G, fs, lw=0, s=20, w=2,
     if isinstance(s, list):
         nx.draw_networkx_nodes(G, pos, node_size=s, node_color=node_color, ax=ax)
     else:
-        nx.draw_networkx_nodes(G, pos, node_size=s, node_color=node_color, ax=ax)
+        nx.draw_networkx_nodes(G, pos, node_size=fs*s, node_color=node_color, ax=ax)
 
     # Draw door edges
     edges = [(u, v) for u, v, d in G.edges(data="connectivity") if d == 1]
     nx.draw_networkx_edges(G, pos, edgelist=edges, edge_color=edge_colors[0],
-                           width=w, ax=ax)
+                           width=1.5*w, ax=ax)
 
-    # Draw door edges
-    edges = [(u, v) for u, v, d in G.edges(data="connectivity") if d == 0]
-    nx.draw_networkx_edges(G, pos, edgelist=edges, edge_color=edge_colors[1],
-                           width=w, ax=ax)
+    # Draw adjacent edges
+    if viz_adjacency:
+        edges = [(u, v) for u, v, d in G.edges(data="connectivity") if d == 0]
+        nx.draw_networkx_edges(G, pos, edgelist=edges, edge_color=edge_colors[1],
+                               width=w, ax=ax)
+
+    if viz_doors:
+        doors = [door["geometry"] for _, door in G.graph["Doors"].iterrows()]
+        draw_rooms(ax, doors, colors=["red"]*len(doors), edgecolor='red', lw=2)
 
 
 def remove_attributes_from_graph(graph, list_attr):
@@ -155,7 +186,10 @@ def get_embeddings(graphs, model, device='cpu'):
 
         # Copy graph and get ID
         G = copy.deepcopy(graph)
-        id = G.graph["ID"]
+        try:
+            id = G.graph["ID"]
+        except:
+            id = G.graph["name"]
 
         # Convert to PyG graph
         G = remove_attributes_from_graph(G, ["polygon"])
@@ -264,7 +298,7 @@ def draw_square(ax, size, center, color="r", lw=0.5):
     ax.plot(xs, ys, f'{color}-', linewidth=lw)
 
 
-def draw_dataset(graphs, names, embeds_grid, names_grid, w, fs=50, stop=-1):
+def draw_dataset(graphs, names, embeds_grid, names_grid, w, fs=50, stop=-1, s=0.5, lw=0.5):
 
     # Set sizing of the floor plans based on the grid and original sizes
     size = (1/w) * (1.1 / 2)
@@ -303,9 +337,9 @@ def draw_dataset(graphs, names, embeds_grid, names_grid, w, fs=50, stop=-1):
             for n, d in G.nodes('polygon')}
 
         # Draw floor plan and graph
-        draw_graph(ax, G, polygons=polygons, pos=pos, fs=fs, s=fs/6, w=fs/80, lw=fs/100)
+        draw_graph(ax, G, polygons=polygons, pos=pos, fs=fs, s=s, w=w, lw=lw)
 
-        if id in ids_rplan:
+        if any(c.isalpha() for c in str(id)):
             draw_square(ax, size*1.7, feat - size*0.5, color="b", lw=fs/30)
         else:
             draw_square(ax, size*1.7, feat - size*0.5, color="r", lw=fs/30)
